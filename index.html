@@ -1,0 +1,1515 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>GRBL лазер — траектория и пульт</title>
+<style>
+  :root{
+    /* ---- палитра в духе Blender (тёмная тема) ---- */
+    --bg:#1d1d1d;          /* фон окна */
+    --region:#303030;      /* фон областей и панелей */
+    --region2:#282828;     /* поля ввода */
+    --header:#1d1d1d;      /* заголовки областей */
+    --widget:#545454;      /* виджеты (кнопки) */
+    --widget-hi:#656565;
+    --widget-lo:#3b3b3b;
+    --sel:#4772b3;         /* выделение / активный виджет */
+    --sel-hi:#5b8ad1;
+    --text:#e5e5e5;--muted:#a6a6a6;
+    --line:#191919;        /* тёмные рамки */
+    --ok:#6aa84f;--err:#c15454;--warn:#d9a441;--orange:#ed9e5c;
+    --r:4px;               /* радиус скругления виджетов */
+  }
+  *{box-sizing:border-box}
+  [hidden]{display:none!important}
+  html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--text);font:12.5px/1.45 "Segoe UI",system-ui,Roboto,Arial,sans-serif;overflow:hidden;-webkit-user-select:none;user-select:none}
+  .app{position:fixed;inset:0;display:flex;flex-direction:column;background:var(--bg)}
+
+  /* ---- верхнее выпадающее меню ---- */
+  .menubar{position:relative;z-index:20;flex:0 0 auto;display:flex;align-items:stretch;height:26px;padding:0 4px;background:var(--header);border-bottom:1px solid var(--line)}
+  .menu{position:relative}
+  .mtitle{min-height:0;height:26px;padding:0 10px;border:0;border-radius:0;background:transparent;color:var(--text);font-size:12.5px;cursor:pointer}
+  .mtitle:hover{background:var(--widget)}
+  .menu.open>.mtitle,.menu.open>.mtitle:hover{background:var(--sel);color:#fff}
+  .mdrop{display:none;position:absolute;left:0;top:100%;min-width:238px;padding:4px;background:var(--region);border:1px solid var(--line);border-radius:var(--r);box-shadow:0 10px 24px rgba(0,0,0,.65)}
+  .menu.open>.mdrop{display:block}
+  .mitem{display:block;width:100%;min-height:0;padding:5px 9px;border:0;border-radius:3px;background:transparent;color:var(--text);font-size:12.5px;text-align:left;white-space:nowrap;cursor:pointer}
+  .mitem:hover{background:var(--sel);color:#fff}
+  .mitem.off{color:#6f6f6f;cursor:default}
+  .mitem.off:hover{background:transparent;color:#6f6f6f}
+  .mitem.on::after{content:'•';float:right;color:var(--orange);font-weight:700}
+  .msep{height:1px;margin:4px 2px;background:var(--line)}
+
+  /* ---- строка статуса ---- */
+  .topbar{position:relative;flex:0 0 auto;display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:5px 8px;background:var(--header);border-bottom:1px solid var(--line);z-index:6}
+  .chips{display:flex;flex-wrap:wrap;gap:5px;min-width:0}
+  .chip{display:inline-flex;align-items:center;gap:5px;background:var(--region2);border:1px solid var(--line);border-radius:var(--r);padding:3px 8px;font:11.5px/1.3 ui-monospace,Menlo,Consolas,monospace;color:var(--muted);white-space:nowrap}
+  .chip b{color:var(--text);font-weight:600}
+  .chip.on{border-color:var(--ok)} .chip.on b{color:var(--ok)}
+  .chip.err{border-color:var(--err)} .chip.err b{color:var(--err)}
+  .run{display:flex;gap:4px;margin-left:auto}
+  .progress{position:absolute;left:0;right:0;bottom:-1px;height:3px;background:#252525}
+  .progress>i{display:block;height:100%;width:0;background:var(--sel);transition:width .15s linear}
+
+  /* ---- область 3D-вида ---- */
+  .stage{position:relative;flex:1 1 auto;min-height:0;overflow:hidden;background:var(--region)}
+  #gcodeCanvas{position:absolute;inset:0;display:block;width:100%;height:100%;touch-action:none;cursor:grab}
+  .legend{position:absolute;left:50%;bottom:8px;transform:translateX(-50%);display:flex;gap:12px;flex-wrap:wrap;justify-content:center;font-size:11px;color:var(--muted);pointer-events:none;max-width:min(58%,540px);text-shadow:0 1px 2px rgba(0,0,0,.85)}
+  .legend i{display:inline-block;width:14px;height:3px;vertical-align:middle;margin-right:5px}
+  .banner{position:absolute;left:50%;top:8px;transform:translateX(-50%);z-index:4;width:max-content;max-width:92%}
+
+  /* ---- выдвижные боковые области ---- */
+  .panel{position:absolute;top:0;bottom:0;width:min(392px,88vw);display:flex;flex-direction:column;background:var(--region);z-index:5;transition:transform .25s ease}
+  .panel.left{left:0;border-right:1px solid var(--line);box-shadow:6px 0 18px rgba(0,0,0,.5)}
+  .panel.right{right:0;border-left:1px solid var(--line);box-shadow:-6px 0 18px rgba(0,0,0,.5)}
+  .app.collapse-left .panel.left{transform:translateX(-100%)}
+  .app.collapse-right .panel.right{transform:translateX(100%)}
+  .phead{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;gap:6px;min-height:26px;padding:0 5px 0 10px;background:var(--header);border-bottom:1px solid var(--line);font-size:12px;font-weight:600;letter-spacing:.2px;color:var(--text)}
+  .pbody{flex:1 1 auto;overflow:auto;padding:8px}
+  .pbody h3{font-size:11px;margin:11px 0 6px;color:var(--muted);text-transform:uppercase;letter-spacing:.7px;font-weight:600}
+  .handle{position:absolute;top:50%;transform:translateY(-50%);z-index:7;width:24px;height:44px;min-height:0;border-radius:var(--r);background:var(--widget-lo);border:1px solid var(--line);color:var(--muted);font-size:13px;line-height:1;cursor:pointer;transition:left .25s ease,right .25s ease,background .12s}
+  .handle:hover{background:var(--widget);color:var(--text)}
+  .handle.left{left:min(392px,88vw)}
+  .handle.right{right:min(392px,88vw)}
+  .app.collapse-left .handle.left{left:6px}
+  .app.collapse-right .handle.right{right:6px}
+  /* ---- виджеты ---- */
+  button{background:var(--widget);color:var(--text);border:1px solid var(--line);border-radius:var(--r);padding:4px 10px;font-family:inherit;font-size:12.5px;line-height:1.3;min-height:26px;cursor:pointer}
+  button:hover{background:var(--widget-hi)}
+  button:active{background:var(--sel)}
+  button:disabled,button:disabled:hover,
+  #btnConnect:disabled,#btnConnect:disabled:hover,
+  #btnRun:disabled,#btnRun:disabled:hover,
+  #btnStop:disabled,#btnStop:disabled:hover{background:var(--widget-lo);color:#6f6f6f;border-color:var(--line);cursor:default}
+  input:disabled,select:disabled,textarea:disabled{background:#262626;color:#6f6f6f;cursor:default}
+  .x{min-height:0;height:20px;padding:0 7px;font-size:11px;border-color:transparent;background:transparent;color:var(--muted)}
+  .x:hover{background:var(--widget);color:var(--text)}
+  #btnConnect{background:var(--sel);border-color:#345a8f;color:#fff;font-weight:600}
+  #btnConnect:hover{background:var(--sel-hi)}
+  #btnRun{background:#3f6b34;border-color:#4e8340;color:#fff;font-weight:600}
+  #btnRun:hover{background:#4b8040}
+  #btnStop{background:#7a3434;border-color:#944040;color:#fff}
+  #btnStop:hover{background:#8d3d3d}
+  .row{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:8px}
+  select,input[type=text],input[type=number]{background:var(--region2);color:var(--text);border:1px solid var(--line);border-radius:var(--r);padding:3px 6px;font-family:inherit;font-size:12.5px;min-height:26px}
+  select:focus,input:focus,textarea:focus{outline:1px solid var(--sel);outline-offset:-1px}
+  input[type=checkbox]{width:14px;height:14px;accent-color:var(--sel);vertical-align:-2px;margin:0 2px 0 0}
+  input#manual{flex:1;min-width:110px;font-family:ui-monospace,Menlo,Consolas,monospace}
+  .chk{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:12px;margin:0;cursor:pointer}
+  .chk:hover{color:var(--text)}
+  .hint{color:var(--muted);font-size:11.5px;margin:6px 0}
+  .warn{background:#3a2c14;color:var(--warn);border:1px solid #4d3a19;border-radius:var(--r);padding:6px 9px;margin:0;font-size:12px}
+
+  /* ---- подпанели (аккордеон) ---- */
+  details{border:1px solid var(--line);border-radius:var(--r);margin-bottom:6px;background:#343434}
+  details>summary{list-style:none;cursor:pointer;padding:6px 9px;font-size:12px;font-weight:600;display:flex;align-items:center;gap:7px;background:var(--widget-lo);color:var(--text);border-radius:3px}
+  details[open]>summary{border-bottom:1px solid var(--line);border-radius:3px 3px 0 0}
+  details>summary:hover{background:#454545}
+  details>summary::-webkit-details-marker{display:none}
+  details>summary::before{content:'▸';color:var(--muted);font-size:11px;transition:transform .15s}
+  details[open]>summary::before{transform:rotate(90deg)}
+  .dbody{padding:8px 9px;background:var(--region)}
+  .dbody ol{margin:0;padding-left:1.1rem;font-size:11.5px;line-height:1.65;color:var(--muted)}
+  .dbody ol b{color:var(--text)}
+  .dbody code{color:var(--text);background:var(--region2);padding:0 3px;border-radius:2px}
+
+  /* ---- таблицы ---- */
+  table{width:100%;border-collapse:collapse;font:11.5px/1.4 ui-monospace,Menlo,Consolas,monospace;margin:0 0 6px}
+  td{padding:3px 5px;border-bottom:1px solid #3a3a3a;vertical-align:top;word-break:break-all}
+  td.k{color:var(--muted);white-space:nowrap;width:42%}
+
+  /* ---- консоль ---- */
+  .log{background:var(--region2);border:1px solid var(--line);border-radius:var(--r);padding:7px;height:40vh;min-height:150px;overflow:auto;margin:0;font:11.5px/1.5 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-word;-webkit-user-select:text;user-select:text}
+  .line.rx{color:#93c26c} .line.tx{color:#84abe2} .line.err{color:#e0918f} .line.info{color:#9a9a9a}
+
+  /* ---- список отправленных строк ---- */
+  .prog{height:26vh;min-height:110px;overflow:auto;background:var(--region2);border:1px solid var(--line);border-radius:var(--r);padding:5px 7px;font:11.5px/1.6 ui-monospace,Menlo,Consolas,monospace;white-space:pre;-webkit-user-select:text;user-select:text}
+  .prog .pl{padding:0 4px;border-radius:3px;color:#8a8a8a}
+  .prog .pl.done{color:#7fae72}
+  .prog .pl.cur{background:var(--sel);color:#fff}
+  .prog .pl.bad{background:#4a2020;color:#e8a0a0}
+
+  /* ---- G‑код и пульт ---- */
+  textarea.gcode{width:100%;height:132px;background:var(--region2);color:var(--text);border:1px solid var(--line);border-radius:var(--r);padding:7px;font:11.5px/1.45 ui-monospace,Menlo,Consolas,monospace;resize:vertical;-webkit-user-select:text;user-select:text}
+  .jog{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;margin-bottom:6px}
+  .jog button{min-height:44px;font-size:15px;font-weight:600}
+  .jog .lbl{display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:11.5px}
+  .jog2{grid-template-columns:repeat(2,1fr)}
+  .axes{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px}
+  .axis{display:flex;align-items:center;gap:5px}
+  .axis .name{color:var(--muted);font-weight:600;font-family:ui-monospace,Menlo,Consolas,monospace}
+
+  /* ---- полосы прокрутки ---- */
+  ::-webkit-scrollbar{width:11px;height:11px}
+  ::-webkit-scrollbar-track{background:#252525}
+  ::-webkit-scrollbar-thumb{background:var(--widget);border:2px solid #252525;border-radius:6px}
+  ::-webkit-scrollbar-thumb:hover{background:var(--widget-hi)}
+</style>
+</head>
+<body>
+<div class="app" id="app">
+
+  <!-- верхнее выпадающее меню -->
+  <nav class="menubar" id="menubar">
+    <div class="menu">
+      <button class="mtitle" type="button">Файл</button>
+      <div class="mdrop">
+        <button class="mitem" type="button" data-cmd="btnOpenFile">Открыть G‑код…</button>
+        <button class="mitem" type="button" data-cmd="btnParseTest">Тестовая траектория</button>
+        <button class="mitem" type="button" data-cmd="btnReparse">Разобрать и показать</button>
+        <div class="msep"></div>
+        <button class="mitem" type="button" data-cmd="btnFit">Вписать в экран</button>
+        <div class="msep"></div>
+        <button class="mitem" type="button" data-cmd="btnClearLog">Очистить консоль</button>
+      </div>
+    </div>
+    <div class="menu">
+      <button class="mtitle" type="button">Вид</button>
+      <div class="mdrop">
+        <button class="mitem" type="button" data-cmd="btnFit">Вписать траекторию</button>
+        <button class="mitem" type="button" data-check="chkShowRapids">Быстрые ходы</button>
+        <button class="mitem" type="button" data-check="chkStartup">G21 G90 в начало</button>
+        <button class="mitem" type="button" data-check="jogUseDollar">Джог через $J</button>
+        <div class="msep"></div>
+        <button class="mitem" type="button" data-panel="left">Панель «Станок»</button>
+        <button class="mitem" type="button" data-panel="right">Панель «Консоль»</button>
+        <div class="msep"></div>
+        <button class="mitem" type="button" data-check="autoScroll">Авто‑прокрутка консоли</button>
+      </div>
+    </div>
+    <div class="menu">
+      <button class="mtitle" type="button">Станок</button>
+      <div class="mdrop">
+        <button class="mitem" type="button" data-cmd="btnConnect">Подключиться</button>
+        <button class="mitem" type="button" data-cmd="btnDisconnect">Отключить</button>
+        <button class="mitem" type="button" data-cmd="btnScanAll">Найти USB‑устройства</button>
+        <div class="msep"></div>
+        <button class="mitem" type="button" data-cmd="btnStatus">Статус «?»</button>
+        <button class="mitem" type="button" data-cmd="btnInfo">Версия «$I»</button>
+        <button class="mitem" type="button" data-cmd="btnSettings">Настройки «$$»</button>
+        <button class="mitem" type="button" data-cmd="btnUnlock">Разблокировать «$X»</button>
+        <button class="mitem" type="button" data-cmd="btnHome">Дом «$H»</button>
+        <div class="msep"></div>
+        <button class="mitem" type="button" data-cmd="btnReset">Soft reset (Ctrl‑X)</button>
+        <button class="mitem" type="button" data-cmd="btnDtr">Сброс платы (DTR)</button>
+      </div>
+    </div>
+    <div class="menu">
+      <button class="mtitle" type="button">Прогон</button>
+      <div class="mdrop">
+        <button class="mitem" type="button" data-cmd="btnRun">▶ Пуск</button>
+        <button class="mitem" type="button" data-cmd="btnHold">⏸ Пауза</button>
+        <button class="mitem" type="button" data-cmd="btnResume">⏵ Продолжить</button>
+        <button class="mitem" type="button" data-cmd="btnStop">⛔ Стоп</button>
+      </div>
+    </div>
+    <div class="menu">
+      <button class="mtitle" type="button">Справка</button>
+      <div class="mdrop">
+        <button class="mitem" type="button" data-cmd="btnInfo">Версия прошивки «$I»</button>
+        <button class="mitem" type="button" data-help="about">О программе</button>
+      </div>
+    </div>
+  </nav>
+
+  <!-- верхняя строка: статус и управление программой -->
+  <header class="topbar">
+    <div class="chips">
+      <span class="chip" id="chipConn">Связь: <b>нет</b></span>
+      <span class="chip" id="chipState">Состояние: <b>—</b></span>
+      <span class="chip" id="chipMpos">MPos: <b>—</b></span>
+      <span class="chip" id="chipWpos">WPos: <b>—</b></span>
+      <span class="chip" id="chipFeed">FS: <b>—</b></span>
+      <span class="chip" id="chipVer">GRBL: <b>—</b></span>
+    </div>
+    <div class="run">
+      <button id="btnRun" disabled title="Пуск">▶ Пуск</button>
+      <button id="btnHold" disabled title="Пауза (!)">⏸</button>
+      <button id="btnResume" disabled title="Продолжить (~)">⏵</button>
+      <button id="btnStop" disabled title="Стоп (0x18)">⛔</button>
+    </div>
+    <div class="progress"><i id="progBar"></i></div>
+  </header>
+
+  <!-- сцена: траектория на весь экран -->
+  <main class="stage">
+    <canvas id="gcodeCanvas"></canvas>
+
+    <div class="banner"><p id="envWarning" class="warn" hidden></p></div>
+
+    <div class="legend">
+      <span><i style="background:#6f6f6f"></i>G0 (быстро)</span>
+      <span><i style="background:#5b8ad1"></i>G1/G2/G3</span>
+      <span><i style="background:#6aa84f"></i>выполнено</span>
+      <span><i style="background:#ed9e5c"></i>текущая позиция</span>
+      <span>1 палец — сдвиг · 2 — масштаб</span>
+    </div>
+
+    <button class="handle left" id="toggleLeft" title="Панель «Станок»">☰</button>
+    <button class="handle right" id="toggleRight" title="Консоль">☰</button>
+
+    <!-- правая панель: консоль -->
+    <aside class="panel right" id="panelConsole">
+      <div class="phead"><span>Консоль</span><button class="x" data-close="right" title="Свернуть">✕</button></div>
+      <div class="pbody">
+        <div class="row">
+          <button id="btnClearLog">Очистить</button>
+          <label class="chk"><input type="checkbox" id="autoScroll" checked> авто‑прокрутка</label>
+        </div>
+        <pre id="log" class="log"></pre>
+        <h3>Отправленные команды</h3>
+        <p class="hint" id="progText2">программа не загружена</p>
+        <div id="progList" class="prog"></div>
+      </div>
+    </aside>
+
+    <!-- левая панель: подключение, GRBL, G‑код, пульт -->
+    <aside class="panel left" id="panelMachine">
+      <div class="phead"><span>Станок</span><button class="x" data-close="left" title="Свернуть">✕</button></div>
+      <div class="pbody">
+
+        <details open>
+          <summary>Подключение</summary>
+          <div class="dbody">
+            <div class="row">
+              <label>Скорость:
+                <select id="baud">
+                  <option>115200</option>
+                  <option>9600</option>
+                  <option>57600</option>
+                  <option>38400</option>
+                  <option>19200</option>
+                  <option>250000</option>
+                </select>
+              </label>
+              <label class="chk"><input type="checkbox" id="showAll"> все USB</label>
+            </div>
+            <div class="row">
+              <button id="btnConnect">Подключиться</button>
+              <button id="btnDisconnect" disabled>Отключить</button>
+              <button id="btnScanAll">Скан</button>
+            </div>
+            <table id="devTable"></table>
+            <details>
+              <summary>Окружение / OTG</summary>
+              <div class="dbody">
+                <table id="envTable"></table>
+                <ol>
+                  <li>Нужен <b>OTG‑адаптер</b> (USB‑C «папа» → USB‑A «мама») и <b>data‑кабель</b>, не «для зарядки».</li>
+                  <li>Подключите плату и дождитесь системного уведомления «USB‑устройство подключено».</li>
+                  <li>Если список пуст — попробуйте USB‑хаб с внешним питанием (планшету не хватает 500 мА).</li>
+                  <li>Ожидается <b>CH340</b>, VID:PID <b>1A86:7523</b>. Иной чип (CP2102 <code>10C4:EA60</code>, FTDI <code>0403:6001</code>) — сообщите VID:PID.</li>
+                </ol>
+              </div>
+            </details>
+          </div>
+        </details>
+
+        <details>
+          <summary>Команды GRBL</summary>
+          <div class="dbody">
+            <div class="row">
+              <button id="btnStatus" disabled>Статус «?»</button>
+              <button id="btnInfo" disabled>Версия «$I»</button>
+              <button id="btnSettings" disabled>Настройки «$$»</button>
+              <button id="btnUnlock" disabled>Разблок. «$X»</button>
+              <button id="btnHome" disabled>Дом «$H»</button>
+              <button id="btnReset" disabled>Soft reset</button>
+              <button id="btnDtr" disabled>Сброс (DTR)</button>
+            </div>
+            <div class="row">
+              <input id="manual" type="text" placeholder="$J=G91 X10 F600" disabled>
+              <button id="btnSend" disabled>→</button>
+            </div>
+          </div>
+        </details>
+
+        <details open>
+          <summary>G‑код</summary>
+          <div class="dbody">
+            <div class="row">
+              <button id="btnOpenFile">Открыть .gcode / .nc</button>
+              <button id="btnParseTest">Тест</button>
+              <button id="btnFit">Вписать</button>
+              <input type="file" id="fileInput" accept=".gcode,.nc,.txt,.gc,.tap,.ngc" hidden>
+            </div>
+            <textarea id="gcode" class="gcode" placeholder="Вставьте текст G‑кода и нажмите «Разобрать»…"></textarea>
+            <div class="row" style="margin-top:8px">
+              <button id="btnReparse">Разобрать и показать</button>
+              <label class="chk"><input type="checkbox" id="chkShowRapids" checked> быстрые ходы</label>
+            </div>
+            <label class="chk" style="margin-bottom:8px"><input type="checkbox" id="chkStartup" checked> G21 G90 в начало</label>
+            <p class="hint" id="progText">Программа не загружена</p>
+          </div>
+        </details>
+
+        <details open>
+          <summary>Пульт управления</summary>
+          <div class="dbody">
+            <div class="row">
+              <label>Шаг:
+                <select id="jogStep">
+                  <option value="0.1">0.1 мм</option>
+                  <option value="1" selected>1 мм</option>
+                  <option value="5">5 мм</option>
+                  <option value="10">10 мм</option>
+                  <option value="50">50 мм</option>
+                </select>
+              </label>
+              <label>F: <input type="number" id="jogFeed" value="1000" min="1" step="100" style="width:90px"></label>
+            </div>
+            <label class="chk" style="margin-bottom:8px"><input type="checkbox" id="jogUseDollar" checked> джог через $J (GRBL 1.1)</label>
+            <div class="jog">
+              <span class="lbl"></span>
+              <button data-jog="Y+">Y+</button>
+              <span class="lbl"></span>
+              <button data-jog="X-">X−</button>
+              <button data-jog="home">⌂ $H</button>
+              <button data-jog="X+">X+</button>
+              <span class="lbl"></span>
+              <button data-jog="Y-">Y−</button>
+              <span class="lbl"></span>
+            </div>
+            <div class="jog jog2">
+              <button data-jog="Z+">Z+</button>
+              <button data-jog="Z-">Z−</button>
+            </div>
+            <h3>Обнуление координат</h3>
+            <div class="axes">
+              <span class="axis"><span class="name">X</span><button data-zero="X">Ноль X</button></span>
+              <span class="axis"><span class="name">Y</span><button data-zero="Y">Ноль Y</button></span>
+              <span class="axis"><span class="name">Z</span><button data-zero="Z">Ноль Z</button></span>
+            </div>
+            <div class="row">
+              <button data-zero="XY">Ноль X/Y</button>
+              <button data-zero="XYZ">Ноль X/Y/Z</button>
+              <button id="btnGoZero" disabled>➜ В ноль X0 Y0</button>
+            </div>
+            <div class="row">
+              <button id="btnG92Clear" disabled>Сброс G92 (G92.1)</button>
+            </div>
+            <label class="chk"><input type="checkbox" id="zeroG10" checked> ноль через G10 L20 (постоянный)</label>
+            <p class="hint">Без галочки — временный сдвиг G92; с галочкой — рабочая система G54 (хранится в памяти платы).</p>
+          </div>
+        </details>
+
+      </div>
+    </aside>
+
+  </main>
+
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ============================ утилиты ============================ */
+  const $ = (id) => document.getElementById(id);
+  const logEl = $('log');
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+
+  function ts() {
+    const d = new Date(), p = (n) => String(n).padStart(2, '0');
+    return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds()) + '.' + String(d.getMilliseconds()).padStart(3, '0');
+  }
+  function log(msg, cls) {
+    const el = document.createElement('div');
+    el.className = 'line' + (cls ? ' ' + cls : '');
+    el.textContent = '[' + ts() + '] ' + msg;
+    logEl.appendChild(el);
+    // защита от переполнения DOM при длительной работе
+    while (logEl.childElementCount > 1200) logEl.removeChild(logEl.firstChild);
+    if ($('autoScroll').checked) logEl.scrollTop = logEl.scrollHeight;
+  }
+  function hex2(n) { return n == null ? '—' : '0x' + n.toString(16).toUpperCase().padStart(4, '0'); }
+
+  /* ============================ окружение ============================ */
+  function detectEnv() {
+    const hasUsb = 'usb' in navigator;
+    const rows = [
+      ['location.protocol', location.protocol],
+      ['isSecureContext', String(window.isSecureContext)],
+      ["'usb' in navigator", String(hasUsb)],
+      ["'serial' in navigator", String('serial' in navigator)]
+    ];
+    const t = $('envTable');
+    t.innerHTML = '';
+    for (const [k, v] of rows) {
+      const tr = t.insertRow();
+      const c1 = tr.insertCell(); c1.className = 'k'; c1.textContent = k;
+      tr.insertCell().textContent = v;
+    }
+    const w = $('envWarning');
+    if (!window.isSecureContext) {
+      w.hidden = false;
+      w.textContent = '⚠ Не защищённый контекст. WebUSB требует HTTPS, localhost или file://.';
+    } else if (!hasUsb) {
+      w.hidden = false;
+      w.textContent = '⚠ navigator.usb отсутствует. Нужен Chrome for Android.';
+    } else if (navigator.usb) {
+      navigator.usb.getDevices().then((list) => {
+        log('Уже разрешено устройств: ' + list.length, 'info');
+        list.forEach((d) => log('  · ' + (d.productName || 'USB') + ' ' + hex2(d.vendorId) + ':' + hex2(d.productId), 'info'));
+      }).catch(() => {});
+    }
+    log('Окружение: secure=' + window.isSecureContext + ', usb=' + hasUsb, 'info');
+  }
+
+  /* ==================== драйвер CH340/CH341 (WebUSB) ==================== */
+  /* Фильтры для пикера. Важно: { vendorId } без productId покрывает ВСЕ модели
+     этого вендора, поэтому CH9102/CH343 и прочие WCH тоже попадут в список. */
+  const DEVICE_FILTERS = [
+    { vendorId: 0x1a86, productId: 0x7523 },                  // ★ именно наш станок: USB-SERIAL CH340 (проверено на ПК, COM9)
+    { vendorId: 0x1a86 },                                     // WCH: CH340/CH340G/CH341/CH343/CH9102/CH9102F
+    { vendorId: 0x2184, productId: 0x0057 },                  // клон CH340
+    { vendorId: 0x4348, productId: 0x5523 },                  // клон CH341
+    { vendorId: 0x9986, productId: 0x7523 },                  // клон CH340
+    { vendorId: 0x10c4, productId: 0xea60 },                  // Silicon Labs CP2102
+    { vendorId: 0x0403, productId: 0x6001 },                  // FTDI FT232R
+    { vendorId: 0x0403, productId: 0x6015 },                  // FTDI FT231X
+    { vendorId: 0x2341 },                                     // Arduino (Uno/Mega 16U2, Leonardo)
+    { classCode: 0x02, subclassCode: 0x02, protocolCode: 0x01 } // USB CDC-ACM (нативный USB)
+  ];
+  const WCH_VENDOR_ID = 0x1a86;
+  const REQ_READ_VERSION = 0x5F;
+  const REQ_READ_REG     = 0x95;
+  const REQ_WRITE_REG    = 0x9A;
+  const REQ_SERIAL_INIT  = 0xA1;
+  const REQ_MODEM_CTRL   = 0xA4;
+  const REG_BAUD_FACTOR  = 0x1312;
+  const REG_BAUD_OFFSET  = 0x0F2C;
+  const REG_LCR          = 0x2518;
+  const REG_FLOW_CTRL    = 0x2727;
+  const LCR_ENABLE_RX = 0x80, LCR_ENABLE_TX = 0x40, LCR_CS8 = 0x03;
+  const SCL_DTR = 0x20, SCL_RTS = 0x40;
+
+  class CH34x {
+    constructor(device) {
+      this.device = device;
+      this.inEp = null;
+      this.outEp = null;
+      this.interfaceNumber = 0;
+      this.reading = false;
+    }
+
+    async ctrlOut(request, value, index) {
+      return this.device.controlTransferOut(
+        { requestType: 'vendor', recipient: 'device', request: request, value: value & 0xFFFF, index: index & 0xFFFF });
+    }
+    async ctrlIn(request, value, index, length) {
+      return this.device.controlTransferIn(
+        { requestType: 'vendor', recipient: 'device', request: request, value: value & 0xFFFF, index: index & 0xFFFF }, length);
+    }
+    async writeReg(reg, val) { return this.ctrlOut(REQ_WRITE_REG, reg, val); }
+
+    async setBaudRate(baudRate) {
+      let factor, divisor;
+      if (baudRate === 921600) {
+        divisor = 7; factor = 0xF300;
+      } else {
+        const base = 1532620800;              // 12 МГц * 128 (usb-serial-for-android)
+        factor = Math.floor(base / baudRate);
+        divisor = 3;
+        while (factor > 0xFFF0 && divisor > 0) { factor >>= 3; divisor--; }
+        if (factor > 0xFFF0) throw new Error('Неподдерживаемая скорость ' + baudRate);
+        factor = 0x10000 - factor;
+      }
+      divisor |= 0x0080;
+      const val1 = (factor & 0xFF00) | divisor;
+      const val2 = factor & 0xFF;
+      await this.writeReg(REG_BAUD_FACTOR, val1);
+      await this.writeReg(REG_BAUD_OFFSET, val2);
+      log('baud ' + baudRate + ' → reg 0x1312=' + hex2(val1) + ' 0x0F2C=' + hex2(val2), 'info');
+    }
+
+    async setControlLines(dtr, rts) {
+      const bits = (dtr ? SCL_DTR : 0) | (rts ? SCL_RTS : 0);
+      await this.ctrlOut(REQ_MODEM_CTRL, (~bits) & 0xFFFF, 0);
+    }
+
+    async init(baudRate) {
+      await this.ctrlIn(REQ_READ_VERSION, 0, 0, 2).catch(() => {});           // версия чипа
+      await this.ctrlOut(REQ_SERIAL_INIT, 0x0000, 0x0000);                     // serial init
+      await this.setBaudRate(baudRate);
+      await this.ctrlIn(REQ_READ_REG, REG_LCR, 0, 2).catch(() => {});          // read LCR
+      await this.writeReg(REG_LCR, LCR_ENABLE_TX | LCR_ENABLE_RX | LCR_CS8);   // 8N1
+      await this.ctrlIn(REQ_READ_REG, 0x0706, 0, 2).catch(() => {});
+      await this.ctrlOut(REQ_SERIAL_INIT, 0x501F, 0xD90A);                     // магическая инициализация
+      await this.setBaudRate(baudRate);                                        // фиксируем скорость
+      await this.writeReg(REG_FLOW_CTRL, 0x0000);                              // аппаратный flow control ВЫКЛ (нужно GRBL)
+      await this.setControlLines(true, true);                                  // DTR + RTS
+      await this.ctrlIn(REQ_READ_REG, 0x0706, 0, 2).catch(() => {});
+      log('CH34x инициализирован', 'info');
+    }
+
+    async open(baudRate) {
+      await this.device.open();
+      if (!this.device.configuration) await this.device.selectConfiguration(1);
+
+      // Ищем интерфейс, у которого есть И bulk IN, И bulk OUT (не жёстко #0)
+      let ifaceNum = -1;
+      const interfaces = this.device.configuration.interfaces;
+      for (let i = 0; i < interfaces.length; i++) {
+        let hasIn = false, hasOut = false;
+        for (const alt of interfaces[i].alternates) {
+          for (const ep of alt.endpoints) {
+            if (ep.type === 'bulk' && ep.direction === 'in') hasIn = true;
+            if (ep.type === 'bulk' && ep.direction === 'out') hasOut = true;
+          }
+        }
+        if (hasIn && hasOut) { ifaceNum = i; break; }
+      }
+      if (ifaceNum < 0) throw new Error('Не найден интерфейс с bulk IN + bulk OUT');
+      this.interfaceNumber = ifaceNum;
+      await this.device.claimInterface(ifaceNum);
+      try { await this.device.selectAlternateInterface(ifaceNum, 0); } catch (e) { /* не критично */ }
+
+      const iface = interfaces[ifaceNum];
+      for (const alt of iface.alternates) {
+        for (const ep of alt.endpoints) {
+          if (ep.type === 'bulk' && ep.direction === 'in' && !this.inEp) this.inEp = ep;
+          if (ep.type === 'bulk' && ep.direction === 'out' && !this.outEp) this.outEp = ep;
+        }
+      }
+      if (!this.inEp || !this.outEp) throw new Error('Не найдены bulk‑endpoints (in/out)');
+      log('Интерфейс ' + ifaceNum + '. Endpoints: IN=0x' + this.inEp.endpointNumber.toString(16) +
+          ' (max ' + this.inEp.packetSize + '), OUT=0x' + this.outEp.endpointNumber.toString(16), 'info');
+
+      await this.init(baudRate);
+    }
+
+    async startReadLoop(onData) {
+      this.reading = true;
+      while (this.reading && this.device.opened) {
+        try {
+          const res = await this.device.transferIn(this.inEp.endpointNumber, this.inEp.packetSize || 32);
+          if (res && res.status !== 'ok') {
+            log('transferIn status: ' + res.status, 'err');
+            if (res.status === 'stall') {
+              try { await this.device.clearHalt('in', this.inEp.endpointNumber); log('Снят stall на IN', 'info'); } catch (e) {}
+            }
+            await new Promise((r) => setTimeout(r, 50));
+            continue;
+          }
+          if (res && res.data && res.data.byteLength) {
+            onData(new Uint8Array(res.data.buffer, res.data.byteOffset, res.data.byteLength));
+          }
+        } catch (e) {
+          if (this.reading) log('Ошибка чтения: ' + (e && e.message ? e.message : e), 'err');
+          break;
+        }
+      }
+      log('Цикл чтения остановлен', 'info');
+    }
+
+    async write(bytes) { return this.device.transferOut(this.outEp.endpointNumber, bytes); }
+
+    async close() {
+      this.reading = false;
+      try { await this.device.releaseInterface(this.interfaceNumber || 0); } catch (e) {}
+      try { await this.device.close(); } catch (e) {}
+    }
+  }
+
+  /* ==================== визуализация: общее состояние ==================== */
+  const canvasEl = $('gcodeCanvas');
+  const ctx = canvasEl ? canvasEl.getContext('2d') : null;
+  let program = null;          // { prog:[{text,from,to}], segs:[...], bounds:{...} }
+  let progNodes = [];          // DOM‑узлы списка «Отправленные команды»
+  let curNode = null;
+  let markerPos = null;        // текущая позиция (рабочие координаты) из отчёта «?»
+  let lastDoneLine = -1;       // индекс последней подтверждённой строки
+  let viewScale = 1, viewTx = 0, viewTy = 0, cw = 0, ch = 0;
+
+  const status = { state: '—', mpos: null, wpos: null, wco: null, fs: null, version: '—' };
+
+  function fmt3(v) { return (v == null || isNaN(v)) ? '—' : Number(v).toFixed(3); }
+  function posStr(p) { return p ? (fmt3(p.x) + ', ' + fmt3(p.y) + ', ' + fmt3(p.z)) : '—'; }
+  function setChip(id, html, cls) {
+    const el = $(id);
+    if (!el) return;
+    el.innerHTML = html;
+    el.className = 'chip' + (cls ? ' ' + cls : '');
+  }
+  function updateStatusBar() {
+    const st = status.state || '—';
+    setChip('chipState', 'Состояние: <b>' + st + '</b>',
+      /alarm/i.test(st) ? 'err' : (/run|jog|home/i.test(st) ? 'on' : ''));
+    setChip('chipMpos', 'MPos: <b>' + posStr(status.mpos) + '</b>');
+    setChip('chipWpos', 'WPos: <b>' + posStr(status.wpos) + '</b>');
+    setChip('chipFeed', 'FS: <b>' + (status.fs || '—') + '</b>');
+    setChip('chipVer', 'GRBL: <b>' + status.version + '</b>');
+  }
+
+  function parseStatusLine(line) {
+    const parts = line.slice(1, -1).split('|');
+    status.state = (parts[0] || '—').trim();
+    for (let i = 1; i < parts.length; i++) {
+      const p = parts[i], c = p.indexOf(':');
+      if (c < 0) continue;
+      const k = p.slice(0, c), v = p.slice(c + 1);
+      const a = v.split(',').map(Number);
+      if (k === 'MPos') status.mpos = { x: a[0], y: a[1], z: a[2] || 0 };
+      else if (k === 'WPos') status.wpos = { x: a[0], y: a[1], z: a[2] || 0 };
+      else if (k === 'WCO') status.wco = { x: a[0], y: a[1], z: a[2] || 0 };
+      else if (k === 'FS') status.fs = v;
+      else if (k === 'F') status.fs = v;
+    }
+    if (!status.wpos && status.mpos) {
+      const o = status.wco || { x: 0, y: 0, z: 0 };
+      status.wpos = { x: status.mpos.x - o.x, y: status.mpos.y - o.y, z: status.mpos.z - o.z };
+    }
+    markerPos = status.wpos || status.mpos;
+    updateStatusBar();
+    drawThrottled();
+  }
+
+  /* ============================ парсер G‑кода ============================ */
+  function stripComments(line) {
+    return line.replace(/\([^)]*\)/g, ' ').replace(/;.*$/, '').trim();
+  }
+  function wordsOf(line) {
+    const g = [], m = [], p = {};
+    const re = /([A-Za-z])\s*([-+]?\d*\.?\d+)/g;
+    let mt;
+    while ((mt = re.exec(line)) !== null) {
+      const L = mt[1].toUpperCase(), V = parseFloat(mt[2]);
+      if (L === 'G') g.push(V);
+      else if (L === 'M') m.push(V);
+      else p[L] = V;
+    }
+    return { g: g, m: m, p: p };
+  }
+  function niceStep(x) {
+    if (!(x > 0)) return 1;
+    const e = Math.pow(10, Math.floor(Math.log10(x)));
+    const f = x / e;
+    return (f < 1.5 ? 1 : f < 3.5 ? 2 : f < 7.5 ? 5 : 10) * e;
+  }
+
+  /* Разбирает программу → { prog, segs, bounds }.
+     Движение хранится в РАБОЧИХ координатах (как на DRO станка). */
+  function parseProgram(text) {
+    const src = String(text).replace(/\r/g, '').split('\n');
+    const segs = [];
+    const prog = [];
+    let x = 0, y = 0, z = 0;                    // машинные координаты, мм
+    let abs = true, mm = true, motion = 0, laser = false;
+    let ox = 0, oy = 0, oz = 0;                 // смещение: машинные − рабочие
+    const b = { minx: 0, maxx: 0, miny: 0, maxy: 0, has: false };
+
+    function bend(px, py) {
+      if (!b.has) { b.minx = b.maxx = px; b.miny = b.maxy = py; b.has = true; return; }
+      if (px < b.minx) b.minx = px;
+      if (px > b.maxx) b.maxx = px;
+      if (py < b.miny) b.miny = py;
+      if (py > b.maxy) b.maxy = py;
+    }
+    function pushSeg(x0, y0, x1, y1, rapid) {
+      const wx0 = x0 - ox, wy0 = y0 - oy, wx1 = x1 - ox, wy1 = y1 - oy;
+      segs.push({ x0: wx0, y0: wy0, x1: wx1, y1: wy1, rapid: !!rapid, line: prog.length });
+      bend(wx0, wy0); bend(wx1, wy1);
+    }
+    function arcTo(sx, sy, ex, ey, i, j, r, cw) {
+      let cx, cy, rad;
+      if (typeof i === 'number' || typeof j === 'number') {
+        cx = sx + (i || 0); cy = sy + (j || 0);
+        rad = Math.hypot(sx - cx, sy - cy);
+      } else if (typeof r === 'number') {
+        const dx = ex - sx, dy = ey - sy, d = Math.hypot(dx, dy);
+        if (d < 1e-9) return;                    // полный круг через R не задаётся
+        rad = Math.abs(r);
+        if (d / 2 > rad) rad = d / 2;
+        const h = Math.sqrt(Math.max(0, rad * rad - (d * d) / 4));
+        const ux = -dy / d, uy = dx / d;
+        const mx = (sx + ex) / 2, my = (sy + ey) / 2;
+        const c1 = [mx + ux * h, my + uy * h], c2 = [mx - ux * h, my - uy * h];
+        const wantMinor = r > 0;
+        let best = c1, bestErr = 9;
+        for (const c of [c1, c2]) {
+          let sw = Math.atan2(ey - c[1], ex - c[0]) - Math.atan2(sy - c[1], sx - c[0]);
+          if (cw) { while (sw > 1e-12) sw -= 2 * Math.PI; }
+          else { while (sw < -1e-12) sw += 2 * Math.PI; }
+          const err = (Math.abs(sw) <= Math.PI + 1e-9) === wantMinor ? 0 : 1;
+          if (err < bestErr) { bestErr = err; best = c; }
+        }
+        cx = best[0]; cy = best[1];
+      } else { pushSeg(sx, sy, ex, ey, false); return; }
+
+      const a0 = Math.atan2(sy - cy, sx - cx);
+      let sw = Math.atan2(ey - cy, ex - cx) - a0;
+      if (cw) { while (sw >= 0) sw -= 2 * Math.PI; if (sw === 0) sw = -2 * Math.PI; }
+      else { while (sw <= 0) sw += 2 * Math.PI; if (sw === 0) sw = 2 * Math.PI; }
+      const rr = Math.hypot(sx - cx, sy - cy) || rad || 1;
+      const steps = Math.max(6, Math.min(128, Math.ceil(Math.abs(sw) * rr / 0.5)));
+      let px = sx, py = sy;
+      for (let t = 1; t <= steps; t++) {
+        const a = a0 + sw * t / steps;
+        const qx = cx + rr * Math.cos(a), qy = cy + rr * Math.sin(a);
+        pushSeg(px, py, qx, qy, false);
+        px = qx; py = qy;
+      }
+    }
+
+    for (let li = 0; li < src.length; li++) {
+      const line = stripComments(src[li]);
+      if (!line) continue;
+      if (/^[%$]/.test(line)) continue;                 // служебные строки
+      if (/^O\d+/i.test(line)) continue;                // номер программы
+
+      const w = wordsOf(line);
+      let isG92 = false;
+      for (const code of w.g) {
+        if (code === 0 || code === 1 || code === 2 || code === 3) motion = code;
+        else if (code === 90) abs = true;
+        else if (code === 91) abs = false;
+        else if (code === 20) mm = false;
+        else if (code === 21) mm = true;
+        else if (code === 92) isG92 = true;
+        else if (code === 92.1) { ox = oy = oz = 0; }
+        else if (code === 28 || code === 30) { x = y = z = 0; ox = oy = oz = 0; }
+      }
+      for (const code of w.m) {
+        if (code === 3 || code === 4) laser = true;
+        else if (code === 5) laser = false;
+      }
+      const k = mm ? 1 : 25.4;                          // дюймы → мм
+      const p = w.p;
+
+      if (isG92) {                                      // G92 — задать рабочий ноль
+        if (!('X' in p) && !('Y' in p) && !('Z' in p)) { ox = x; oy = y; oz = z; }
+        else {
+          if ('X' in p) ox = x - p.X * k;
+          if ('Y' in p) oy = y - p.Y * k;
+          if ('Z' in p) oz = z - p.Z * k;
+        }
+        prog.push({ text: line, from: segs.length, to: segs.length });
+        continue;
+      }
+
+      let tx = x, ty = y, tz = z;
+      if (abs) {
+        if ('X' in p) tx = p.X * k;
+        if ('Y' in p) ty = p.Y * k;
+        if ('Z' in p) tz = p.Z * k;
+      } else {
+        if ('X' in p) tx = x + p.X * k;
+        if ('Y' in p) ty = y + p.Y * k;
+        if ('Z' in p) tz = z + p.Z * k;
+      }
+
+      const from = segs.length;
+      const hasXY = ('X' in p) || ('Y' in p);
+      const hasArc = ('I' in p) || ('J' in p) || ('R' in p);
+      if ((motion === 2 || motion === 3) && (hasXY || hasArc)) {
+        arcTo(x, y, tx, ty,
+          ('I' in p ? p.I : undefined), ('J' in p ? p.J : undefined),
+          ('R' in p ? p.R * k : undefined), motion === 2);
+      } else if (hasXY && (motion === 0 || motion === 1) && (tx !== x || ty !== y)) {
+        pushSeg(x, y, tx, ty, motion === 0);            // G0 = быстрый ход
+      }
+      x = tx; y = ty; z = tz;
+      prog.push({ text: line, from: from, to: segs.length });
+    }
+
+    if (!b.has) { b.minx = 0; b.miny = 0; b.maxx = 10; b.maxy = 10; }
+    return { prog: prog, segs: segs, bounds: b };
+  }
+
+  /* ============================ отрисовка траектории ============================ */
+  function canvasSize() {
+    if (!canvasEl || !ctx) return;
+    const r = canvasEl.getBoundingClientRect();
+    const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+    cw = Math.max(80, Math.round(r.width));
+    ch = Math.max(80, Math.round(r.height));
+    canvasEl.width = Math.round(cw * dpr);
+    canvasEl.height = Math.round(ch * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  const w2s = (x, y) => [viewTx + x * viewScale, viewTy - y * viewScale];
+
+  function fitView() {
+    if (!cw || !ch) canvasSize();
+    if (!program || !program.segs.length || !cw) { draw(); return; }
+    const b = program.bounds, pad = 28;
+    const w = Math.max(1e-3, b.maxx - b.minx), h = Math.max(1e-3, b.maxy - b.miny);
+    const s = Math.min((cw - 2 * pad) / w, (ch - 2 * pad) / h);
+    viewScale = (isFinite(s) && s > 0) ? s : 1;
+    const cxw = (b.minx + b.maxx) / 2, cyw = (b.miny + b.maxy) / 2;
+    viewTx = cw / 2 - cxw * viewScale;
+    viewTy = ch / 2 + cyw * viewScale;
+    draw();
+  }
+
+  function zoomAt(sx, sy, f) {
+    const wx = (sx - viewTx) / viewScale, wy = (viewTy - sy) / viewScale;
+    viewScale = Math.max(0.05, Math.min(500, viewScale * f));
+    viewTx = sx - wx * viewScale;
+    viewTy = sy + wy * viewScale;
+    draw();
+  }
+
+  function drawGrid() {
+    const step = niceStep(70 / viewScale);
+    const wx0 = (0 - viewTx) / viewScale, wx1 = (cw - viewTx) / viewScale;
+    const wy0 = (viewTy - ch) / viewScale, wy1 = (viewTy - 0) / viewScale;
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = '#3b3b3b';
+    ctx.beginPath();
+    for (let gx = Math.ceil(wx0 / step) * step; gx <= wx1; gx += step) {
+      const sx = Math.round(w2s(gx, 0)[0]) + 0.5;
+      ctx.moveTo(sx, 0); ctx.lineTo(sx, ch);
+    }
+    for (let gy = Math.ceil(wy0 / step) * step; gy <= wy1; gy += step) {
+      const sy = Math.round(w2s(0, gy)[1]) + 0.5;
+      ctx.moveTo(0, sy); ctx.lineTo(cw, sy);
+    }
+    ctx.stroke();
+    ctx.strokeStyle = '#4d4d4d';
+    ctx.beginPath();
+    const o = w2s(0, 0);
+    ctx.moveTo(Math.round(o[0]) + 0.5, 0); ctx.lineTo(Math.round(o[0]) + 0.5, ch);
+    ctx.moveTo(0, Math.round(o[1]) + 0.5); ctx.lineTo(cw, Math.round(o[1]) + 0.5);
+    ctx.stroke();
+    ctx.fillStyle = '#8a8a8a';
+    ctx.font = '11px ui-monospace,Menlo,Consolas,monospace';
+    ctx.fillText('сетка ' + step + ' мм', 10, 16);
+  }
+
+  function drawMarker() {
+    const o = w2s(0, 0);
+    ctx.strokeStyle = '#8a8a8a'; ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(o[0] - 7, o[1]); ctx.lineTo(o[0] + 7, o[1]);
+    ctx.moveTo(o[0], o[1] - 7); ctx.lineTo(o[0], o[1] + 7);
+    ctx.stroke();
+    if (markerPos) {
+      const m = w2s(markerPos.x, markerPos.y);
+      ctx.fillStyle = '#ed9e5c';
+      ctx.beginPath(); ctx.arc(m[0], m[1], 4, 0, 2 * Math.PI); ctx.fill();
+      ctx.strokeStyle = '#ed9e5c'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(m[0], m[1], 10, 0, 2 * Math.PI); ctx.stroke();
+    }
+  }
+
+  /* Троттлинг перерисовки: при потоковой отправке не чаще ~6–7 кадров/с,
+     иначе большой контур на слабом планшете загрузит CPU. */
+  let lastDrawTs = 0, drawTimer = null;
+  function drawThrottled() {
+    if (!stream.running && !stream.paused) { draw(); return; }
+    const now = Date.now();
+    if (now - lastDrawTs > 150) { lastDrawTs = now; draw(); return; }
+    if (!drawTimer) drawTimer = setTimeout(() => { drawTimer = null; lastDrawTs = Date.now(); draw(); }, 160);
+  }
+
+  function draw() {
+    if (!ctx || !cw) return;
+    ctx.fillStyle = '#303030';
+    ctx.fillRect(0, 0, cw, ch);
+    drawGrid();
+    if (!program || !program.segs.length) {
+      ctx.fillStyle = '#a6a6a6';
+      ctx.font = '12.5px ui-monospace,Menlo,Consolas,monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('G‑код не загружен: «Открыть .gcode» или «Тестовая траектория»', cw / 2, Math.max(60, ch / 2 - 8));
+      ctx.textAlign = 'left';
+      drawMarker();
+      return;
+    }
+    const lw = Math.max(1, Math.min(2.5, viewScale * 0.12));
+    const segLine = (s) => {
+      const a = w2s(s.x0, s.y0), c = w2s(s.x1, s.y1);
+      ctx.moveTo(a[0], a[1]); ctx.lineTo(c[0], c[1]);
+    };
+    if ($('chkShowRapids').checked) {
+      ctx.lineWidth = Math.max(1, lw * 0.7);
+      ctx.strokeStyle = '#6f6f6f';
+      ctx.beginPath();
+      for (const s of program.segs) if (s.rapid) segLine(s);
+      ctx.stroke();
+    }
+    ctx.lineWidth = lw; ctx.strokeStyle = '#5b8ad1';      // ещё не отправлено
+    ctx.beginPath();
+    for (const s of program.segs) if (!s.rapid && s.line > lastDoneLine) segLine(s);
+    ctx.stroke();
+    ctx.lineWidth = lw * 1.3; ctx.strokeStyle = '#6aa84f'; // выполнено
+    ctx.beginPath();
+    for (const s of program.segs) if (!s.rapid && s.line <= lastDoneLine) segLine(s);
+    ctx.stroke();
+    drawMarker();
+  }
+
+  /* =============== отправка G‑кода: char‑counting стример =============== */
+  const stream = {
+    idx: 0, running: false, paused: false,
+    pendingChars: 0, queue: [], charLimit: 120, timer: null, done: 0
+  };
+
+  function setRunButtons() {
+    const on = !!driver;
+    $('btnRun').disabled = !on || stream.running;
+    $('btnHold').disabled = !on || !stream.running || stream.paused;
+    $('btnResume').disabled = !on || !stream.running || !stream.paused;
+    $('btnStop').disabled = !on || !stream.running;
+    $('btnRun').textContent = stream.running ? '⏳ Идёт…' : '▶ Пуск';
+  }
+
+  function updateProgress() {
+    const total = program ? program.prog.length : 0;
+    const pct = total ? Math.min(100, Math.round(stream.done * 100 / total)) : 0;
+    const txt = total
+      ? ('Отправлено ' + stream.done + ' / ' + total + ' строк (' + pct + '%)' +
+         (stream.paused ? ' · пауза' : (stream.running ? ' · идёт' : ' · готово')))
+      : 'программа не загружена';
+    if ($('progBar')) $('progBar').style.width = pct + '%';
+    if ($('progText')) $('progText').textContent = txt;
+    if ($('progText2')) $('progText2').textContent = txt;
+  }
+
+  function scrollProgTo(node) {
+    const box = $('progList');
+    if (!box || !node) return;
+    box.scrollTop = Math.max(0, node.offsetTop - box.clientHeight / 2);
+  }
+
+  const PROG_DOM_MAX = 20000;   // защита от гигантских файлов (растровые G‑коды)
+
+  function renderProgList() {
+    const box = $('progList');
+    if (!box) return;
+    box.innerHTML = '';
+    progNodes = [];
+    curNode = null;
+    if (program) {
+      if (program.prog.length > PROG_DOM_MAX) {
+        const d = document.createElement('div');
+        d.className = 'pl';
+        d.textContent = 'Строк ' + program.prog.length + ' — построчная подсветка отключена (> ' + PROG_DOM_MAX + ')';
+        box.appendChild(d);
+      } else {
+        const frag = document.createDocumentFragment();
+        program.prog.forEach((l, i) => {
+          const d = document.createElement('div');
+          d.className = 'pl';
+          d.textContent = String(i + 1).padStart(4, ' ') + '  ' + l.text;
+          frag.appendChild(d);
+          progNodes.push(d);
+        });
+        box.appendChild(frag);
+      }
+    }
+    updateProgress();
+  }
+
+  function resetStream() {
+    stream.idx = 0; stream.running = false; stream.paused = false;
+    stream.pendingChars = 0; stream.queue = []; stream.done = 0;
+    lastDoneLine = -1;
+    if (stream.timer) { clearInterval(stream.timer); stream.timer = null; }
+    progNodes.forEach((n) => { n.className = 'pl'; });
+    curNode = null;
+    setRunButtons();
+    updateProgress();
+    draw();
+  }
+
+  function sendRaw(str, idx) {
+    const bytes = encoder.encode(str);
+    stream.queue.push({ len: bytes.length, idx: (idx == null ? null : idx) });
+    stream.pendingChars += bytes.length;
+    return driver.write(bytes);
+  }
+
+  function pump() {
+    if (!stream.running || stream.paused || !driver || !program) return;
+    let guard = 0;
+    while (stream.idx < program.prog.length && guard++ < 2000) {
+      const text = program.prog[stream.idx].text;
+      const len = text.length + 1;                       // + '\n'
+      if (stream.pendingChars + len > stream.charLimit) break;
+      const idx = stream.idx;
+      sendRaw(text + '\n', idx).catch((e) => log('Ошибка отправки: ' + (e && e.message ? e.message : e), 'err'));
+      log('→ ' + text, 'tx');
+      const node = progNodes[idx];
+      if (node) {
+        if (curNode && curNode !== node) curNode.classList.remove('cur');
+        node.classList.add('cur');
+        curNode = node;
+        if ($('autoScroll').checked) scrollProgTo(node);
+      }
+      stream.idx++;
+    }
+    if (stream.idx >= program.prog.length && stream.pendingChars <= 0 && !stream.queue.length) finishStream();
+  }
+
+  function onStreamAck() {
+    if (!stream.queue.length) return;
+    const item = stream.queue.shift();
+    stream.pendingChars -= item.len;
+    if (stream.pendingChars < 0) stream.pendingChars = 0;
+    if (item.idx != null) {
+      stream.done++;
+      lastDoneLine = item.idx;
+      const node = progNodes[item.idx];
+      if (node) { node.classList.remove('cur'); node.classList.add('done'); if (curNode === node) curNode = null; }
+    }
+    updateProgress();
+    drawThrottled();
+    pump();
+  }
+
+  function onStreamError(msg) {
+    log('✖ ' + msg, 'err');
+    if (stream.queue.length) {
+      const item = stream.queue.shift();
+      stream.pendingChars -= item.len;
+      if (stream.pendingChars < 0) stream.pendingChars = 0;
+      if (item.idx != null) {
+        const node = progNodes[item.idx];
+        if (node) { node.classList.remove('cur'); node.classList.add('bad'); }
+        log('Строка ' + (item.idx + 1) + ': ' + (program ? program.prog[item.idx].text : ''), 'err');
+        if (curNode === progNodes[item.idx]) curNode = null;
+      }
+    }
+    stopStream('GRBL вернул ошибку');
+  }
+
+  function startStream() {
+    if (!driver) { log('Нет соединения', 'err'); return; }
+    if (!program || !program.prog.length) { log('Нет программы: загрузите G‑код', 'err'); return; }
+    resetStream();
+    stream.running = true;
+    setRunButtons();
+    log('▶ Старт программы: ' + program.prog.length + ' строк, буфер ' + stream.charLimit + ' симв.', 'info');
+    try {
+      if ($('chkStartup').checked) {
+        sendRaw('G21\n', null); log('→ G21 (мм)', 'tx');
+        sendRaw('G90\n', null); log('→ G90 (абсолют)', 'tx');
+      }
+    } catch (e) { log('Ошибка старта: ' + e, 'err'); return; }
+    if (stream.timer) clearInterval(stream.timer);
+    stream.timer = setInterval(() => { if (driver) driver.write(encoder.encode('?')).catch(() => {}); }, 300);
+    pump();
+  }
+
+  function feedHold() {
+    if (!driver) return;
+    driver.write(new Uint8Array([0x21])).catch(() => {});
+    log('⏸ «!» — пауза (feed hold)', 'tx');
+    stream.paused = true;
+    setRunButtons(); updateProgress();
+  }
+  function resumeStream() {
+    if (!driver) return;
+    driver.write(new Uint8Array([0x7E])).catch(() => {});
+    log('▶ «~» — продолжение', 'tx');
+    stream.paused = false;
+    setRunButtons(); updateProgress();
+    pump();
+  }
+  function stopStream(reason) {
+    const wasRunning = stream.running || stream.paused;
+    stream.running = false; stream.paused = false;
+    if (stream.timer) { clearInterval(stream.timer); stream.timer = null; }
+    if (driver && wasRunning) driver.write(new Uint8Array([0x18])).catch(() => {});
+    log('⛔ Стоп' + (wasRunning ? ' (soft reset 0x18)' : '') + (reason ? ' — ' + reason : ''), 'err');
+    setRunButtons(); updateProgress();
+  }
+  function finishStream() {
+    stream.running = false; stream.paused = false;
+    if (stream.timer) { clearInterval(stream.timer); stream.timer = null; }
+    log('✔ Программа отправлена полностью (' + stream.done + ' строк)', 'rx');
+    setRunButtons(); updateProgress();
+  }
+
+  /* ============================ загрузка программы ============================ */
+  const TEST_GCODE = [
+    'G21 G90',
+    'G0 X0 Y0',
+    'M3 S300',
+    'G1 X40 Y0 F600',
+    'G1 X40 Y30',
+    'G1 X0 Y30',
+    'G1 X0 Y0',
+    'M5',
+    'G0 X8 Y8',
+    'M3 S800',
+    'G1 X32 Y8',
+    'G1 X32 Y22',
+    'G1 X8 Y22',
+    'G1 X8 Y8',
+    'M5',
+    'G0 X13 Y15',
+    'G2 X27 Y15 I7 J0 F400',
+    'M5',
+    'G0 X0 Y0'
+  ].join('\n');
+
+  function loadProgram() {
+    const text = $('gcode').value;
+    resetStream();
+    if (!text.trim()) { program = null; renderProgList(); draw(); return; }
+    program = parseProgram(text);
+    renderProgList();
+    lastDoneLine = -1;
+    canvasSize();
+    fitView();
+    updateProgress();
+    log('Разобрано: ' + program.prog.length + ' строк, ' + program.segs.length + ' сегментов траектории', 'info');
+  }
+
+  /* ============================ пульт: джог и ноль ============================ */
+  function jogMove(v) {
+    if (!driver) { log('Нет соединения', 'err'); return; }
+    if (v === 'home') { sendStr('$H\n'); return; }
+    const axis = v.charAt(0).toUpperCase();
+    const sign = v.charAt(1) === '-' ? '-' : '';
+    const step = parseFloat($('jogStep').value) || 1;
+    const feed = parseFloat($('jogFeed').value) || 1000;
+    if ($('jogUseDollar').checked) {
+      sendStr('$J=G91 G21 ' + axis + sign + step + ' F' + feed + '\n');
+    } else {
+      sendStr('G91 G21 G1 ' + axis + sign + step + ' F' + feed + '\n');
+      sendStr('G90\n');
+    }
+  }
+
+  function zeroAxes(which) {
+    if (!driver) { log('Нет соединения', 'err'); return; }
+    const parts = [];
+    if (which.indexOf('X') >= 0) parts.push('X0');
+    if (which.indexOf('Y') >= 0) parts.push('Y0');
+    if (which.indexOf('Z') >= 0) parts.push('Z0');
+    if (!parts.length) return;
+    if ($('zeroG10').checked) sendStr('G10 L20 P1 ' + parts.join(' ') + '\n');  // рабочая система G54
+    else sendStr('G92 ' + parts.join(' ') + '\n');                              // временный сдвиг
+  }
+
+  /* ============================ приложение ============================ */
+  let driver = null;
+  let connected = false;
+  let lineBuf = '';
+  const CMD = ['btnStatus', 'btnInfo', 'btnSettings', 'btnUnlock', 'btnHome', 'btnReset', 'btnDtr'];
+  const CTRL = ['btnRun', 'btnHold', 'btnResume', 'btnStop', 'btnGoZero', 'btnG92Clear'];
+
+  function setConnected(on) {
+    connected = on;
+    $('btnConnect').disabled = on;
+    $('btnDisconnect').disabled = !on;
+    CMD.forEach((id) => { $(id).disabled = !on; });
+    CTRL.forEach((id) => { const e = $(id); if (e) e.disabled = !on; });
+    document.querySelectorAll('[data-jog],[data-zero]').forEach((b) => { b.disabled = !on; });
+    $('manual').disabled = !on;
+    $('btnSend').disabled = !on;
+    setChip('chipConn', 'Связь: <b>' + (on ? 'есть' : 'нет') + '</b>', on ? 'on' : '');
+    setRunButtons();
+  }
+
+  function showDevice(d) {
+    const rows = [
+      ['VID', hex2(d.vendorId)],
+      ['PID', hex2(d.productId)],
+      ['Производитель', d.manufacturerName || '—'],
+      ['Продукт', d.productName || '—'],
+      ['Серийный номер', d.serialNumber || '—']
+    ];
+    const t = $('devTable');
+    t.innerHTML = '';
+    for (const [k, v] of rows) {
+      const tr = t.insertRow();
+      const c1 = tr.insertCell(); c1.className = 'k'; c1.textContent = k;
+      tr.insertCell().textContent = v;
+    }
+    if (d.vendorId !== WCH_VENDOR_ID) {
+      log('⚠ Это НЕ WCH (CH340/CH341/CH9102): VID ' + hex2(d.vendorId) +
+          '. Драйвер CH34x к такой плате не подойдёт — сообщите VID:PID.', 'err');
+    }
+  }
+
+  /* Диагностика: запросить ЛЮБОЕ USB‑устройство (фильтр пустой = показать всё) */
+  async function scanAll() {
+    if (!('usb' in navigator)) { log('WebUSB недоступен в этом браузере', 'err'); return; }
+    try {
+      log('Открываю список ВСЕХ USB‑устройств (без фильтра)…', 'info');
+      const d = await navigator.usb.requestDevice({ filters: [] });
+      log('Выбрано: ' + hex2(d.vendorId) + ':' + hex2(d.productId) + ' — ' + (d.productName || 'без имени'), 'info');
+      showDevice(d);
+    } catch (e) {
+      log('Список пуст или выбор отменён (' + (e && e.name ? e.name : e) + ')', 'err');
+      log('Если список пуст ВСЕГДА — Android не видит ни одного USB‑устройства: смотрите раздел «OTG / кабель / питание».', 'info');
+    }
+  }
+
+  /* Разбор строк от GRBL: «ok» / «error:N» / «ALARM:N» / «<статус>» / прочее */
+  const ALARM_HINTS = {
+    1: 'сработал концевик (hard limit)',
+    2: 'сработал софт‑лимит (выход за $130–$132)',
+    3: 'сброс во время движения — позиция потеряна',
+    4: 'запуск с некорректной строкой/probing',
+    5: 'homing не сконфигурирован ($22=0)',
+    6: 'нет отхода (back‑off) после homing',
+    7: 'ошибка определения Z после homing',
+    8: 'homing не уложился в fail‑safe ($25)',
+    9: 'концевые выключатели не найдены'
+  };
+
+  function applyVersion(v) {
+    const major = parseFloat(v);
+    if (isFinite(major) && major < 1.1 && $('jogUseDollar').checked) {
+      $('jogUseDollar').checked = false;
+      log('GRBL ' + v + ': команда $J недоступна — джог переключён на G91 G1 (проверьте $20=0).', 'info');
+    }
+  }
+
+  function onGrblLine(line) {
+    const s = line.trim();
+    if (s.charAt(0) === '<') {                      // отчёт: <Idle|MPos:...|FS:...>
+      parseStatusLine(s);
+      if (!stream.running) log(line, 'rx');         // при потоковой отправке не засоряем консоль
+      return;
+    }
+    const low = s.toLowerCase();
+    if (low === 'ok' || low.indexOf('ok ') === 0) { log(line, 'rx'); onStreamAck(); return; }
+    if (low.indexOf('error') === 0) { onStreamError(s); return; }
+    if (low.indexOf('alarm') === 0) {
+      const n = parseInt((s.split(':')[1] || '').trim(), 10);
+      log(line, 'err');
+      log('ALARM ' + (isFinite(n) ? n : '?') + ': ' + (ALARM_HINTS[n] || 'см. документацию GRBL') + ' — снять кнопкой «$X»', 'err');
+      if (stream.running || stream.paused) stopStream('ALARM от GRBL');
+      return;
+    }
+    const m = s.match(/Grbl\s+([\d.]+[a-zA-Z]?)/i);
+    if (m) { status.version = m[1]; updateStatusBar(); applyVersion(m[1]); }
+    log(line, 'rx');
+  }
+
+  function handleIncoming(bytes) {
+    lineBuf += decoder.decode(bytes, { stream: true });
+    let i;
+    while ((i = lineBuf.indexOf('\n')) >= 0) {
+      const line = lineBuf.slice(0, i).replace(/\r$/, '');
+      lineBuf = lineBuf.slice(i + 1);
+      if (line.length) onGrblLine(line);
+    }
+    if (lineBuf.length > 400) { onGrblLine(lineBuf); lineBuf = ''; }
+  }
+
+  async function connect() {
+    if (!('usb' in navigator)) { log('WebUSB недоступен в этом браузере', 'err'); return; }
+    try {
+      const opts = $('showAll').checked ? { filters: [] } : { filters: DEVICE_FILTERS };
+      const device = await navigator.usb.requestDevice(opts);
+      showDevice(device);
+      driver = new CH34x(device);
+      const baud = parseInt($('baud').value, 10);
+      log('Открываю устройство на ' + baud + ' бод…', 'info');
+      await driver.open(baud);
+      setConnected(true);
+      log('Подключено. Ждём приветствие GRBL (если его нет — нажмите Soft reset).', 'info');
+      driver.startReadLoop(handleIncoming).catch((e) => log('Чтение прервано: ' + e, 'err'));
+    } catch (e) {
+      log('Ошибка подключения: ' + (e && e.name ? e.name + ' — ' : '') + (e && e.message ? e.message : e), 'err');
+      if (e && e.name === 'NotFoundError') {
+        log('Список пуст или устройство не выбрано.', 'info');
+        log('Если список ПУСТ ВСЕГДА — Android не видит USB‑устройство: проверьте OTG‑адаптер, data‑кабель и питание (раздел «OTG / кабель / питание»).', 'info');
+      }
+    }
+  }
+
+  async function disconnect() {
+    if (driver) {
+      await driver.close();
+      driver = null;
+    }
+    setConnected(false);
+    log('Отключено', 'info');
+  }
+
+  async function sendStr(str) {
+    if (!driver) { log('Нет соединения', 'err'); return; }
+    await driver.write(encoder.encode(str));
+    log('→ ' + str.replace(/\r?\n$/, ''), 'tx');
+  }
+  async function sendBytes(arr) {
+    if (!driver) { log('Нет соединения', 'err'); return; }
+    await driver.write(new Uint8Array(arr));
+  }
+
+  /* ---------- привязка кнопок ---------- */
+  $('btnConnect').addEventListener('click', connect);
+  $('btnDisconnect').addEventListener('click', disconnect);
+  $('btnScanAll').addEventListener('click', scanAll);
+  $('btnStatus').addEventListener('click', () => sendStr('?'));
+  $('btnInfo').addEventListener('click', () => sendStr('$I\r\n'));
+  $('btnSettings').addEventListener('click', () => sendStr('$$\r\n'));
+  $('btnUnlock').addEventListener('click', () => sendStr('$X\r\n'));
+  $('btnHome').addEventListener('click', () => sendStr('$H\r\n'));
+  $('btnReset').addEventListener('click', () => { sendBytes([0x18]); log('→ soft reset (0x18)', 'tx'); });
+  $('btnDtr').addEventListener('click', async () => {
+    if (!driver) return;
+    await driver.setControlLines(false, true);
+    await new Promise((r) => setTimeout(r, 100));
+    await driver.setControlLines(true, true);
+    log('DTR импульс (аппаратный сброс платы)', 'info');
+  });
+  $('btnSend').addEventListener('click', () => {
+    const v = $('manual').value.trim();
+    if (v) sendStr(v + '\r\n');
+    $('manual').value = '';
+  });
+  $('manual').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('btnSend').click(); });
+  $('btnClearLog').addEventListener('click', () => { logEl.innerHTML = ''; });
+
+  /* ---------- привязка: загрузка G‑кода, прогон, пульт ---------- */
+  $('btnOpenFile').addEventListener('click', () => $('fileInput').click());
+  $('fileInput').addEventListener('change', (ev) => {
+    const f = ev.target.files && ev.target.files[0];
+    if (!f) return;
+    const rd = new FileReader();
+    rd.onload = () => {
+      $('gcode').value = String(rd.result || '');
+      loadProgram();
+      log('Загружен файл: ' + f.name + ' (' + f.size + ' байт)', 'info');
+    };
+    rd.onerror = () => log('Не удалось прочитать файл', 'err');
+    rd.readAsText(f);
+    ev.target.value = '';
+  });
+  $('btnReparse').addEventListener('click', loadProgram);
+  $('btnParseTest').addEventListener('click', () => { $('gcode').value = TEST_GCODE; loadProgram(); });
+  $('btnFit').addEventListener('click', fitView);
+  $('chkShowRapids').addEventListener('change', draw);
+  $('btnRun').addEventListener('click', startStream);
+  $('btnHold').addEventListener('click', feedHold);
+  $('btnResume').addEventListener('click', resumeStream);
+  $('btnStop').addEventListener('click', () => stopStream('по кнопке'));
+  document.querySelectorAll('[data-jog]').forEach((b) => b.addEventListener('click', () => jogMove(b.dataset.jog)));
+  document.querySelectorAll('[data-zero]').forEach((b) => b.addEventListener('click', () => zeroAxes(b.dataset.zero)));
+  $('btnGoZero').addEventListener('click', () => sendStr('G90 G0 X0 Y0\n'));
+  $('btnG92Clear').addEventListener('click', () => sendStr('G92.1\n'));
+
+  /* ---------- сворачивание боковых панелей ---------- */
+  const appEl = $('app');
+  const collapsePanel = (side, open) => { if (appEl) appEl.classList.toggle('collapse-' + side, !open); };
+  document.querySelectorAll('[data-close]').forEach((b) => {
+    b.addEventListener('click', () => collapsePanel(b.dataset.close, false));
+  });
+  if ($('toggleLeft')) $('toggleLeft').addEventListener('click', () => { if (appEl) appEl.classList.toggle('collapse-left'); });
+  if ($('toggleRight')) $('toggleRight').addEventListener('click', () => { if (appEl) appEl.classList.toggle('collapse-right'); });
+
+  /* ---------- верхнее выпадающее меню ---------- */
+  const menubarEl = $('menubar');
+  if (menubarEl) {
+    const syncMenu = (menu) => {
+      menu.querySelectorAll('.mitem').forEach((it) => {
+        if (it.dataset.cmd) { const el = $(it.dataset.cmd); it.classList.toggle('off', !el || el.disabled); }
+        else if (it.dataset.check) { const el = $(it.dataset.check); it.classList.toggle('on', !!el && el.checked); }
+        else if (it.dataset.panel) { it.classList.toggle('on', !!appEl && !appEl.classList.contains('collapse-' + it.dataset.panel)); }
+      });
+    };
+    const closeMenus = () => menubarEl.querySelectorAll('.menu.open').forEach((m) => m.classList.remove('open'));
+    const openMenu = (menu) => { closeMenus(); menu.classList.add('open'); syncMenu(menu); };
+
+    menubarEl.querySelectorAll('.menu > .mtitle').forEach((t) => {
+      const menu = t.parentElement;
+      t.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (menu.classList.contains('open')) closeMenus(); else openMenu(menu);
+      });
+      t.addEventListener('pointerenter', (e) => {
+        if (e.pointerType === 'touch') return;   // на тач‑экране меню открывает только касание
+        if (menubarEl.querySelector('.menu.open') && !menu.classList.contains('open')) openMenu(menu);
+      });
+    });
+
+    menubarEl.querySelectorAll('.mitem').forEach((it) => {
+      it.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (it.classList.contains('off')) return;
+        if (it.dataset.cmd) {
+          const el = $(it.dataset.cmd);
+          if (el && !el.disabled) el.click();
+        } else if (it.dataset.check) {
+          const el = $(it.dataset.check);
+          if (el && !el.disabled) { el.checked = !el.checked; el.dispatchEvent(new Event('change', { bubbles: true })); }
+        } else if (it.dataset.panel) {
+          collapsePanel(it.dataset.panel, !!appEl && appEl.classList.contains('collapse-' + it.dataset.panel));
+        } else if (it.dataset.help === 'about') {
+          log('GRBL · WebUSB — одна HTML‑страница: драйвер CH340/CH341, потоковая отправка G‑кода с подсчётом символов, визуализация траектории, пульт и консоль.', 'info');
+        }
+        closeMenus();
+      });
+    });
+
+    document.addEventListener('click', () => closeMenus());
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenus(); });
+  }
+
+
+  /* ---------- канвас: сдвиг одним пальцем, щипок/колесо — масштаб ---------- */
+  if (canvasEl) {
+    const pts = new Map();
+    let dragging = false, lastX = 0, lastY = 0, pinch = 0;
+    const local = (e) => { const r = canvasEl.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+    canvasEl.addEventListener('pointerdown', (e) => {
+      try { canvasEl.setPointerCapture(e.pointerId); } catch (err) {}
+      const p = local(e);
+      pts.set(e.pointerId, p);
+      if (pts.size === 1) { dragging = true; lastX = p.x; lastY = p.y; }
+      else if (pts.size === 2) { const a = Array.from(pts.values()); pinch = Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y); dragging = false; }
+      e.preventDefault();
+    });
+    canvasEl.addEventListener('pointermove', (e) => {
+      if (!pts.has(e.pointerId)) return;
+      const p = local(e);
+      pts.set(e.pointerId, p);
+      if (pts.size >= 2) {
+        const a = Array.from(pts.values());
+        const d = Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y);
+        if (pinch > 0 && d > 0) zoomAt((a[0].x + a[1].x) / 2, (a[0].y + a[1].y) / 2, d / pinch);
+        pinch = d;
+      } else if (dragging) {
+        viewTx += p.x - lastX; viewTy += p.y - lastY;
+        lastX = p.x; lastY = p.y; draw();
+      }
+      e.preventDefault();
+    });
+    const endPtr = (e) => { pts.delete(e.pointerId); if (!pts.size) dragging = false; if (pts.size < 2) pinch = 0; };
+    canvasEl.addEventListener('pointerup', endPtr);
+    canvasEl.addEventListener('pointercancel', endPtr);
+    canvasEl.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const p = local(e);
+      zoomAt(p.x, p.y, e.deltaY < 0 ? 1.15 : 1 / 1.15);
+    }, { passive: false });
+    if (window.ResizeObserver) new ResizeObserver(() => { canvasSize(); draw(); }).observe(canvasEl);
+  }
+  window.addEventListener('resize', () => { canvasSize(); draw(); });
+  window.addEventListener('orientationchange', () => setTimeout(() => { canvasSize(); draw(); }, 250));
+
+  navigator.usb && navigator.usb.addEventListener('disconnect', (ev) => {
+    log('USB‑устройство отключено физически', 'err');
+    if (stream.running || stream.paused) stopStream('устройство отключено');
+    disconnect();
+  });
+
+  setConnected(false);
+  detectEnv();
+  canvasSize();
+  updateStatusBar();
+  updateProgress();
+  renderProgList();
+  draw();
+  log('Готово. Подключите станок по OTG и нажмите «Подключиться».', 'info');
+})();
+
+
+
+</script>
+</body>
+</html>
