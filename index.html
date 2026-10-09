@@ -411,6 +411,7 @@
   const logEl = $('log');
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
+  let lastScrollTs = 0, scrollGapMs = 0;   // при потоке автоскролл консоли не чаще 250 мс
 
   function ts() {
     const d = new Date(), p = (n) => String(n).padStart(2, '0');
@@ -423,7 +424,11 @@
     logEl.appendChild(el);
     // защита от переполнения DOM при длительной работе
     while (logEl.childElementCount > 1200) logEl.removeChild(logEl.firstChild);
-    if ($('autoScroll').checked) logEl.scrollTop = logEl.scrollHeight;
+    if (!$('autoScroll').checked) return;
+    const now = Date.now();
+    if (scrollGapMs && now - lastScrollTs < scrollGapMs) return;   // троттлинг при потоке
+    lastScrollTs = now;
+    logEl.scrollTop = logEl.scrollHeight;
   }
   function hex2(n) { return n == null ? '—' : '0x' + n.toString(16).toUpperCase().padStart(4, '0'); }
 
@@ -494,6 +499,9 @@
       this.outEp = null;
       this.interfaceNumber = 0;
       this.reading = false;
+      this.txChain = Promise.resolve();  // сериализация записей: в полёте всегда один transferOut
+      this.txPkt = 32;                   // размер пакета OUT (CH340 = 32 байта)
+      this.txErrors = 0;                 // счётчик неудачных попыток записи (для диагностики)
     }
 
     async ctrlOut(request, value, index) {
@@ -576,8 +584,10 @@
         }
       }
       if (!this.inEp || !this.outEp) throw new Error('Не найдены bulk‑endpoints (in/out)');
+      this.txPkt = this.outEp.packetSize || 32;
       log('Интерфейс ' + ifaceNum + '. Endpoints: IN=0x' + this.inEp.endpointNumber.toString(16) +
-          ' (max ' + this.inEp.packetSize + '), OUT=0x' + this.outEp.endpointNumber.toString(16), 'info');
+          ' (max ' + this.inEp.packetSize + '), OUT=0x' + this.outEp.endpointNumber.toString(16) +
+          ' (max ' + this.outEp.packetSize + ')', 'info');
 
       await this.init(baudRate);
     }
@@ -606,7 +616,42 @@
       log('Цикл чтения остановлен', 'info');
     }
 
-    async write(bytes) { return this.device.transferOut(this.outEp.endpointNumber, bytes); }
+    /* ЕДИНСТВЕННАЯ точка записи в порт.
+       КРИТИЧНО: WebUSB/Android не переносит параллельные bulkTransfer на один
+       endpoint — при потоковой отправке вызовы (пачка строк, «?», «!», «~», 0x18,
+       джог) уходили внахлёст, и байты терялись. Из-за одной потерянной строки
+       GRBL не присылал «ok», окно подтверждений не открывалось и поток замирал
+       (станок доедал буфер и вставал). Теперь все записи выстроены в одну
+       цепочку (порядок вызовов = порядок байт), а длинный буфер режется по
+       размеру пакета, как это делает системный драйвер ch34x. */
+    write(bytes) {
+      const task = this.txChain.then(() => this.writeChunks(bytes));
+      this.txChain = task.then(() => {}, () => {});   // ошибка не рвёт очередь
+      return task;
+    }
+
+    async writeChunks(bytes) {
+      const pkt = this.txPkt || 32;
+      for (let off = 0; off < bytes.length; off += pkt) {
+        const chunk = bytes.subarray(off, Math.min(off + pkt, bytes.length));
+        let lastErr = null;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          try {
+            const res = await this.device.transferOut(this.outEp.endpointNumber, chunk);
+            if (res && res.status !== 'ok') throw new Error('transferOut status: ' + res.status);
+            lastErr = null;
+            break;
+          } catch (e) {
+            lastErr = e;
+            this.txErrors++;
+            try { await this.device.clearHalt('out', this.outEp.endpointNumber); } catch (e2) {}
+            await new Promise((r) => setTimeout(r, 5 + attempt * 15));
+          }
+        }
+        if (lastErr) throw lastErr;
+      }
+      return bytes.length;
+    }
 
     async close() {
       this.reading = false;
@@ -947,8 +992,15 @@
   /* =============== отправка G‑кода: char‑counting стример =============== */
   const stream = {
     idx: 0, running: false, paused: false,
-    pendingChars: 0, queue: [], charLimit: 120, timer: null, done: 0
+    pendingChars: 0, queue: [], charLimit: 120, timer: null, done: 0,
+    lastAckTs: 0,      // время последнего «ok» — для watchdog'а
+    lastState: '',     // предыдущее состояние из «?» — чтобы не засорять консоль
+    idleSince: 0       // с какого момента контроллер сообщает Idle при непустой очереди
   };
+  const ACK_TIMEOUT_MS = 2500;   // нет «ok» при непустой очереди → строка потерялась
+  const IDLE_GRACE_MS  = 1500;   // «Idle» при непустой очереди → GRBL опустошил буфер
+  const SLOW_LINE_RE   = /\bG4\b|\$H\b|\$J\b|\bM0\b|\bM1\b/i;   // эти команды GRBL подтверждает не сразу
+  const GRBL_BANNER_RE = /^Grbl\s+[\d.]+[a-zA-Z]?/i;            // приветствие = плата перезагрузилась
 
   function setRunButtons() {
     const on = !!driver;
@@ -1009,6 +1061,9 @@
   function resetStream() {
     stream.idx = 0; stream.running = false; stream.paused = false;
     stream.pendingChars = 0; stream.queue = []; stream.done = 0;
+    stream.lastAckTs = 0; stream.lastState = ''; stream.idleSince = 0;
+    dropTx();
+    scrollGapMs = 0;
     lastDoneLine = -1;
     if (stream.timer) { clearInterval(stream.timer); stream.timer = null; }
     progNodes.forEach((n) => { n.className = 'pl'; });
@@ -1018,22 +1073,52 @@
     draw();
   }
 
+  /* Байты пачки копим и отдаём драйверу ОДНИМ вызовом: меньше отдельных
+     transferOut (а на CH340+Android именно параллельные передачи теряли данные). */
+  let txParts = [];
+  let txBytes = 0;
+
   function sendRaw(str, idx) {
     const bytes = encoder.encode(str);
-    stream.queue.push({ len: bytes.length, idx: (idx == null ? null : idx) });
+    stream.queue.push({ len: bytes.length, idx: (idx == null ? null : idx), text: str.replace(/\r?\n$/, '') });
     stream.pendingChars += bytes.length;
-    return driver.write(bytes);
+    txParts.push(bytes);
+    txBytes += bytes.length;
+    return null;   // запись выполнит flushTx() в конце pump()
   }
 
+  function flushTx() {
+    if (!txParts.length) return;
+    const all = new Uint8Array(txBytes);
+    let off = 0;
+    for (const p of txParts) { all.set(p, off); off += p.length; }
+    txParts = []; txBytes = 0;
+    if (!driver) return;
+    driver.write(all).catch((e) => {
+      log('✖ Ошибка записи в порт: ' + (e && e.message ? e.message : e) +
+          ' — поток остановлен, часть строк могла не дойти до контроллера (' + all.length + ' байт)', 'err');
+      if (stream.running || stream.paused) stopStream('ошибка записи в USB');
+    });
+  }
+
+  function dropTx() { txParts = []; txBytes = 0; }
+
   function pump() {
-    if (!stream.running || stream.paused || !driver || !program) return;
+    if (!stream.running || stream.paused || !driver || !program) { flushTx(); return; }
     let guard = 0;
     while (stream.idx < program.prog.length && guard++ < 2000) {
       const text = program.prog[stream.idx].text;
       const len = text.length + 1;                       // + '\n'
+      if (len > stream.charLimit) {                      // строка не влезает в окно даже на пустом буфере
+        log('✖ Строка ' + (stream.idx + 1) + ' длиннее окна передачи (' + len + ' > ' + stream.charLimit +
+            ' симв.) — поток остановлен, чтобы не «залипнуть» молча: ' + text, 'err');
+        flushTx();
+        stopStream('строка не помещается в окно передачи');
+        return;
+      }
       if (stream.pendingChars + len > stream.charLimit) break;
       const idx = stream.idx;
-      sendRaw(text + '\n', idx).catch((e) => log('Ошибка отправки: ' + (e && e.message ? e.message : e), 'err'));
+      sendRaw(text + '\n', idx);
       log('→ ' + text, 'tx');
       const node = progNodes[idx];
       if (node) {
@@ -1044,10 +1129,13 @@
       }
       stream.idx++;
     }
+    flushTx();   // вся пачка уходит одной передачей
     if (stream.idx >= program.prog.length && stream.pendingChars <= 0 && !stream.queue.length) finishStream();
   }
 
   function onStreamAck() {
+    stream.lastAckTs = Date.now();
+    stream.idleSince = 0;
     if (!stream.queue.length) return;
     const item = stream.queue.shift();
     stream.pendingChars -= item.len;
@@ -1093,8 +1181,40 @@
       }
     } catch (e) { log('Ошибка старта: ' + e, 'err'); return; }
     if (stream.timer) clearInterval(stream.timer);
-    stream.timer = setInterval(() => { if (driver) driver.write(encoder.encode('?')).catch(() => {}); }, 300);
+    stream.lastAckTs = Date.now();
+    stream.lastState = '';
+    stream.idleSince = 0;
+    scrollGapMs = 250;
+    stream.timer = setInterval(onStreamTick, 250);
     pump();
+  }
+
+  /* Тик во время потока: опрос состояния «?» + watchdog подтверждений.
+     Без него потеря одной строки (или перезагрузка платы) давала «тихий»
+     ступор: станок доедал буфер и вставал, а интерфейс продолжал писать «идёт». */
+  function onStreamTick() {
+    if (driver) driver.write(encoder.encode('?')).catch(() => {});
+    if (!stream.running || stream.paused) return;
+    if (!stream.queue.length) return;
+    const now = Date.now();
+    const head = stream.queue[0];
+    const slow = head && SLOW_LINE_RE.test(head.text || '');   // G4/$H подтверждается после выполнения
+    const limit = slow ? 30000 : ACK_TIMEOUT_MS;
+
+    if (stream.lastAckTs && (now - stream.lastAckTs) > limit) {
+      log('✖ Нет ответа «ok» уже ' + ((now - stream.lastAckTs) / 1000).toFixed(1) + ' с. ' +
+          'Отправлено и не подтверждено строк: ' + stream.queue.length + ' (' + stream.pendingChars + ' симв.), ' +
+          'последняя: «' + head.text + '». Скорее всего строка потерялась при записи в USB ' +
+          'или контроллер перезагрузился. Поток остановлен — проверьте позицию и запустите программу заново.', 'err');
+      stopStream('таймаут подтверждения «ok»');
+      return;
+    }
+
+    if (!slow && stream.idleSince && (now - stream.idleSince) > IDLE_GRACE_MS) {
+      log('✖ Контроллер сообщает Idle, но ' + stream.queue.length + ' строк (' + stream.pendingChars +
+          ' симв.) не подтверждены: GRBL опустошил свой буфер и остановился. Поток прерван.', 'err');
+      stopStream('Idle при непустой очереди (потеря строки)');
+    }
   }
 
   function feedHold() {
@@ -1109,6 +1229,8 @@
     driver.write(new Uint8Array([0x7E])).catch(() => {});
     log('▶ «~» — продолжение', 'tx');
     stream.paused = false;
+    stream.lastAckTs = Date.now();   // сбрасываем отсчёт watchdog'а после паузы
+    stream.idleSince = 0;
     setRunButtons(); updateProgress();
     pump();
   }
@@ -1117,12 +1239,21 @@
     stream.running = false; stream.paused = false;
     if (stream.timer) { clearInterval(stream.timer); stream.timer = null; }
     if (driver && wasRunning) driver.write(new Uint8Array([0x18])).catch(() => {});
+    const lost = stream.queue.length;
+    stream.queue = []; stream.pendingChars = 0; stream.idleSince = 0; stream.lastState = '';
+    dropTx();
+    scrollGapMs = 0;
     log('⛔ Стоп' + (wasRunning ? ' (soft reset 0x18)' : '') + (reason ? ' — ' + reason : ''), 'err');
+    if (lost) log('Сброшено неподтверждённых строк: ' + lost + ' — координаты для них уже неизвестны, ' +
+                  'перед новым запуском проверьте позицию станка.', 'info');
     setRunButtons(); updateProgress();
   }
   function finishStream() {
     stream.running = false; stream.paused = false;
+    stream.lastState = ''; stream.idleSince = 0;
     if (stream.timer) { clearInterval(stream.timer); stream.timer = null; }
+    dropTx();
+    scrollGapMs = 0;
     log('✔ Программа отправлена полностью (' + stream.done + ' строк)', 'rx');
     setRunButtons(); updateProgress();
   }
@@ -1270,7 +1401,20 @@
     const s = line.trim();
     if (s.charAt(0) === '<') {                      // отчёт: <Idle|MPos:...|FS:...>
       parseStatusLine(s);
-      if (!stream.running) log(line, 'rx');         // при потоковой отправке не засоряем консоль
+      if (stream.running || stream.paused) {
+        const st = status.state || '—';
+        if (st !== stream.lastState) {              // в потоке пишем только смену состояния
+          stream.lastState = st;
+          log(line, 'rx');
+        }
+        if (/^idle/i.test(st) && stream.queue.length) {
+          if (!stream.idleSince) stream.idleSince = Date.now();
+        } else {
+          stream.idleSince = 0;
+        }
+      } else {
+        log(line, 'rx');
+      }
       return;
     }
     const low = s.toLowerCase();
@@ -1281,6 +1425,21 @@
       log(line, 'err');
       log('ALARM ' + (isFinite(n) ? n : '?') + ': ' + (ALARM_HINTS[n] || 'см. документацию GRBL') + ' — снять кнопкой «$X»', 'err');
       if (stream.running || stream.paused) stopStream('ALARM от GRBL');
+      return;
+    }
+    // Приветствие GRBL посреди программы = плата перезагрузилась (питание/помехи от
+    // лазера, либо M2/M30 в файле — GRBL выполняет их как «конец программы» + soft reset).
+    // Позиция и модальные состояния после этого потеряны, продолжать работу опасно.
+    if (GRBL_BANNER_RE.test(s) && (stream.running || stream.paused)) {
+      const m2 = s.match(/Grbl\s+([\d.]+[a-zA-Z]?)/i);
+      if (m2) { status.version = m2[1]; updateStatusBar(); applyVersion(m2[1]); }
+      log('⚠ Контроллер перезагрузился во время программы: ' + s +
+          ' — позиция и режимы сброшены, неподтверждённые строки потеряны. Программа остановлена.', 'err');
+      stopStream('перезагрузка контроллера во время программы');
+      return;
+    }
+    if (s.charAt(0) === '[' && (stream.running || stream.paused)) {
+      log('⚠ Сообщение GRBL во время программы: ' + s, 'err');   // напр. [MSG:Reset to continue]
       return;
     }
     const m = s.match(/Grbl\s+([\d.]+[a-zA-Z]?)/i);
@@ -1322,6 +1481,10 @@
   }
 
   async function disconnect() {
+    if (stream.running || stream.paused) stopStream('отключение USB');
+    if (stream.timer) { clearInterval(stream.timer); stream.timer = null; }
+    dropTx();
+    scrollGapMs = 0;
     if (driver) {
       await driver.close();
       driver = null;
@@ -1332,12 +1495,14 @@
 
   async function sendStr(str) {
     if (!driver) { log('Нет соединения', 'err'); return; }
-    await driver.write(encoder.encode(str));
+    try { await driver.write(encoder.encode(str)); }
+    catch (e) { log('✖ Ошибка записи «' + str.replace(/\r?\n$/, '') + '»: ' + (e && e.message ? e.message : e), 'err'); return; }
     log('→ ' + str.replace(/\r?\n$/, ''), 'tx');
   }
   async function sendBytes(arr) {
     if (!driver) { log('Нет соединения', 'err'); return; }
-    await driver.write(new Uint8Array(arr));
+    try { await driver.write(new Uint8Array(arr)); }
+    catch (e) { log('✖ Ошибка записи байт: ' + (e && e.message ? e.message : e), 'err'); }
   }
 
   /* ---------- привязка кнопок ---------- */
